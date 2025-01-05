@@ -90,31 +90,46 @@ dataset = Dataset.from_list(training_data)
 # Training configuration
 training_args = {
     "learning_rate": 1e-5,
-    "num_train_epochs": 3,
+    "num_train_epochs": 30,
     "per_device_train_batch_size": 1,
     "gradient_accumulation_steps": 4,
 }
 
 # Fine-tune student model
 def train_student():
-    # Initialize training
     student_model.train()
     optimizer = torch.optim.AdamW(student_model.parameters(), lr=training_args["learning_rate"])
+    max_length = 512  # Define max sequence length
 
     for epoch in range(training_args["num_train_epochs"]):
         for batch in dataset:
-            # Prepare input and move to GPU
-            inputs = teacher_tokenizer(batch["prompt"], return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
-            labels = teacher_tokenizer(batch["response"], return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+            # Prepare input with proper padding and truncation
+            model_inputs = teacher_tokenizer(
+                batch["prompt"],
+                truncation=True,
+                max_length=max_length,
+                padding="max_length",
+                return_tensors="pt"
+            ).to(device)
 
-            # Forward pass
-            outputs = student_model(**inputs, labels=labels.input_ids)
+            # Prepare labels (responses) with same max_length
+            labels = teacher_tokenizer(
+                batch["response"],
+                truncation=True,
+                max_length=max_length,
+                padding="max_length",
+                return_tensors="pt"
+            ).to(device)
+
+            # Forward pass with aligned sequences
+            outputs = student_model(
+                input_ids=model_inputs.input_ids,
+                attention_mask=model_inputs.attention_mask,
+                labels=labels.input_ids
+            )
+            
             loss = outputs.loss
-            
-            # Backward pass
             loss.backward()
-            
-            # Update weights
             optimizer.step()
             optimizer.zero_grad()
             
