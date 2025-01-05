@@ -3,7 +3,6 @@ import torch
 from datasets import Dataset
 import random
 from peft import get_peft_model, LoraConfig, TaskType
-import torch.nn.functional as F
 
 # Add device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -96,15 +95,9 @@ training_args = {
     "gradient_accumulation_steps": 4,
 }
 
-def compute_kl_loss(teacher_logits, student_logits):
-    teacher_probs = F.softmax(teacher_logits, dim=-1)
-    student_logs = F.log_softmax(student_logits, dim=-1)
-    return F.kl_div(student_logs, teacher_probs, reduction='batchmean')
-
 # Fine-tune student model
 def train_student():
     student_model.train()
-    teacher_model.eval()
     optimizer = torch.optim.AdamW(student_model.parameters(), lr=training_args["learning_rate"])
     max_length = 512  # Define max sequence length
 
@@ -128,25 +121,19 @@ def train_student():
                 return_tensors="pt"
             ).to(device)
 
-            # Get teacher logits
-            with torch.no_grad():
-                teacher_outputs = teacher_model(**model_inputs)
-            
-            # Get student outputs and compute combined loss
-            student_outputs = student_model(
+            # Forward pass with aligned sequences
+            outputs = student_model(
                 input_ids=model_inputs.input_ids,
                 attention_mask=model_inputs.attention_mask,
                 labels=labels.input_ids
             )
             
-            kl_loss = compute_kl_loss(teacher_outputs.logits, student_outputs.logits)
-            total_loss = student_outputs.loss + kl_loss * 0.5  # Weighted combination
-            
-            total_loss.backward()
+            loss = outputs.loss
+            loss.backward()
             optimizer.step()
             optimizer.zero_grad()
             
-            print(f"Epoch: {epoch}, Loss: {total_loss.item():.4f}")
+            print(f"Epoch: {epoch}, Loss: {loss.item():.4f}")
 
 if __name__ == "__main__":
     print("Starting training...")
