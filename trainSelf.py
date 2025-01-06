@@ -77,7 +77,10 @@ def create_training_examples():
     for task in tasks:
         full_prompt = f"{SYSTEM_PROMPT}\n\nTask: {task}"
         # Get teacher's response
+        print(f"Teacher prompt: \n{full_prompt}")
         teacher_response = generate_response(teacher_model, teacher_tokenizer, full_prompt)
+        print (f"Teacher response: \n{teacher_response}")
+        print("=====================================")
         examples.append({
             "prompt": full_prompt,
             "student_prompt": f"\n\nTask: {task}",
@@ -174,17 +177,26 @@ def train_student():
 
             # Get student outputs and compute combined loss
             student_outputs = student_model(
-                input_ids=encoded.input_ids,
-                attention_mask=encoded.attention_mask,
-                labels=labels
+                input_ids=student_encoded.input_ids,
+                attention_mask=student_encoded.attention_mask,
+                labels=student_labels
             )
 
-            # Align logits for KL divergence
-            student_len = student_outputs.logits.size(1)
-            teacher_len = teacher_outputs.logits.size(1)
-            min_len = min(student_len, teacher_len)
-            teacher_logits = teacher_outputs.logits[:, :min_len, :]
-            student_logits = student_outputs.logits[:, :min_len, :]
+            # Align logits for KL divergence. This is complex because the lengths of the prompts can be different,
+            # Our approache is goint to be to shift both student and teacher logits to the left, removing the prompt
+            # tokens, and then truncating the longer of the two to the length of the shorter one.
+            total_length = teacher_outputs.logits.shape[1]
+            teacher_logits = teacher_outputs.logits.clone()
+            student_logits = student_outputs.logits.clone()
+            # Shift logits left to remove prompt tokens
+            for i, length in enumerate(prompt_lengths):
+                teacher_logits[i, :total_length-length] = teacher_outputs.logits[i, length:total_length]
+                teacher_logits[i, total_length-length:] = 32000  # Zero-pad the end
+
+            for i, length in enumerate(student_prompt_lengths):
+                student_logits[i, :total_length-length] = student_outputs.logits[i, length:total_length]
+                student_logits[i, total_length-length:] = 32000  # Zero-pad the end
+            #truncate the longer of the two to the length of the shorter one:
             kl_loss = compute_kl_loss(teacher_logits, student_logits)
 
             total_loss = student_outputs.loss + kl_loss * 0.5  # Weighted combination
@@ -194,9 +206,23 @@ def train_student():
             print(f"Epoch: {epoch}, Loss: {total_loss.item()}")
 
             if epoch % 100 == 0:
+                # print the encodings of the prompt and expected response, for the teacher and student
+                print(f"Prompt: {batch['prompt']}")
+                print(f"Student Prompt: {batch['student_prompt']}")
+                print(f"Response: {batch['response']}")
+                print(f"Combined: {batch['combined']}")
+                print(f"Combined Student: {batch['combined_student']}")
+                #print the respective tokenized encodings:
+                print(f"Encoded: {encoded}")
+                print(f"Student Encoded: {student_encoded}")
+                #and the labels:
+                print(f"Labels: {labels}")
+                print(f"Student Labels: {student_labels}")
+
+
                 # Print outputs of teacher and student, and calculate the level of similarity
-                teacher_output = teacher_tokenizer.decode(torch.argmax(teacher_outputs.logits, dim=-1)[0], skip_special_tokens=True)
-                student_output = teacher_tokenizer.decode(torch.argmax(student_outputs.logits, dim=-1)[0], skip_special_tokens=True)
+                teacher_output = teacher_tokenizer.decode(torch.argmax(teacher_outputs.logits, dim=-1)[0][:30], skip_special_tokens=True)
+                student_output = teacher_tokenizer.decode(torch.argmax(student_outputs.logits, dim=-1)[0][:30], skip_special_tokens=True)
                 print(f"Epoch: {epoch}, Teacher Output: {teacher_output}")
                 print(f"Epoch: {epoch}, Student Output: {student_output}")
                 #print(f"Epoch: {epoch}, Similarity: {teacher_output == student_output}")
@@ -212,6 +238,17 @@ def train_student():
                 #also outputs logits shapes before truncation:
                 print(f"Teacher outputs logits shape: {teacher_outputs.logits.shape}")
                 print(f"Student outputs logits shape: {student_outputs.logits.shape}")
+                #detokenize student and teacher logits after shifting and truncating:
+                print(f"Teacher logits: {teacher_tokenizer.decode(torch.argmax(teacher_logits, dim=-1)[0][:30], skip_special_tokens=True)}")
+                print(f"Student logits: {teacher_tokenizer.decode(torch.argmax(student_logits, dim=-1)[0][:30], skip_special_tokens=True)}")
+                #print the prompt lengths:
+                print(f"Prompt lengths: {prompt_lengths}")
+                print(f"Student Prompt lengths: {student_prompt_lengths}")
+                #print the 30 first teacher and student argmax logits:
+                print(f"Teacher argmax logits: {torch.argmax(teacher_logits, dim=-1)[0][:30]}")
+                print(f"Student argmax logits: {torch.argmax(student_logits, dim=-1)[0][:30]}")
+
+
 
 
 if __name__ == "__main__":
